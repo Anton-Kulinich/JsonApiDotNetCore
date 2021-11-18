@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using JsonApiDotNetCore.Configuration;
 using JsonApiDotNetCore.Middleware;
 using JsonApiDotNetCore.OpenApi.JsonApiMetadata;
 using Microsoft.AspNetCore.Mvc;
@@ -26,15 +25,14 @@ namespace JsonApiDotNetCore.OpenApi
 
         public ActionDescriptorCollection ActionDescriptors => GetActionDescriptors();
 
-        public JsonApiActionDescriptorCollectionProvider(IResourceGraph resourceGraph, IControllerResourceMapping controllerResourceMapping,
+        public JsonApiActionDescriptorCollectionProvider(IControllerResourceMapping controllerResourceMapping,
             IActionDescriptorCollectionProvider defaultProvider)
         {
-            ArgumentGuard.NotNull(resourceGraph, nameof(resourceGraph));
             ArgumentGuard.NotNull(controllerResourceMapping, nameof(controllerResourceMapping));
             ArgumentGuard.NotNull(defaultProvider, nameof(defaultProvider));
 
             _defaultProvider = defaultProvider;
-            _jsonApiEndpointMetadataProvider = new JsonApiEndpointMetadataProvider(resourceGraph, controllerResourceMapping);
+            _jsonApiEndpointMetadataProvider = new JsonApiEndpointMetadataProvider(controllerResourceMapping);
         }
 
         private ActionDescriptorCollection GetActionDescriptors()
@@ -107,7 +105,6 @@ namespace JsonApiDotNetCore.OpenApi
                 if (producesResponse != null)
                 {
                     producesResponse.Type = responseTypeToSet;
-                    
                     return;
                 }
             }
@@ -134,7 +131,7 @@ namespace JsonApiDotNetCore.OpenApi
 
                 if (expandedEndpoint.AttributeRouteInfo == null)
                 {
-                    throw new NotSupportedException("Only attribute based routing is supported for JsonApiDotNetCore endpoints");
+                    throw new UnreachableCodeException();
                 }
 
                 ExpandTemplate(expandedEndpoint.AttributeRouteInfo, relationshipName);
@@ -172,7 +169,12 @@ namespace JsonApiDotNetCore.OpenApi
         {
             var clonedDescriptor = (ActionDescriptor)descriptor.MemberwiseClone();
 
-            clonedDescriptor.AttributeRouteInfo = (AttributeRouteInfo)descriptor.AttributeRouteInfo!.MemberwiseClone();
+            if (descriptor.AttributeRouteInfo == null)
+            {
+                throw new NotSupportedException("Only attribute routing is supported for JsonApiDotNetCore endpoints.");
+            }
+
+            clonedDescriptor.AttributeRouteInfo = (AttributeRouteInfo)descriptor.AttributeRouteInfo.MemberwiseClone();
 
             clonedDescriptor.FilterDescriptors = new List<FilterDescriptor>();
 

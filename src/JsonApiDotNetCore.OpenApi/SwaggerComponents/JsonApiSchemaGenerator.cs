@@ -24,6 +24,7 @@ namespace JsonApiDotNetCore.OpenApi.SwaggerComponents
         private static readonly Type[] SingleNonPrimaryDataDocumentOpenTypes =
         {
             typeof(ToOneRelationshipRequestData<>),
+            typeof(NullableToOneRelationshipRequestData<>),
             typeof(ResourceIdentifierResponseDocument<>),
             typeof(SecondaryResourceResponseDocument<>)
         };

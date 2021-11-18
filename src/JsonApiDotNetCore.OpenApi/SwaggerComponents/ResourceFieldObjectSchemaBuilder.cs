@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Linq;
-using System.Reflection;
 using JsonApiDotNetCore.OpenApi.JsonApiObjects.RelationshipData;
 using JsonApiDotNetCore.OpenApi.JsonApiObjects.ResourceObjects;
 using JsonApiDotNetCore.Resources.Annotations;
@@ -14,6 +13,19 @@ namespace JsonApiDotNetCore.OpenApi.SwaggerComponents
     internal sealed class ResourceFieldObjectSchemaBuilder
     {
         private static readonly SchemaRepository ResourceSchemaRepository = new();
+
+        private static readonly Type[] RelationshipResponseDataOpenTypes =
+        {
+            typeof(ToOneRelationshipResponseData<>),
+            typeof(ToManyRelationshipResponseData<>),
+            typeof(NullableToOneRelationshipResponseData<>)
+        };
+
+        private static readonly Type[] NullableRelationshipDataOpenTypes =
+        {
+            typeof(NullableToOneRelationshipRequestData<>),
+            typeof(NullableToOneRelationshipResponseData<>)
+        };
 
         private readonly ResourceTypeInfo _resourceTypeInfo;
         private readonly ISchemaRepositoryAccessor _schemaRepositoryAccessor;
@@ -83,17 +95,11 @@ namespace JsonApiDotNetCore.OpenApi.SwaggerComponents
                 {
                     AddAttributeSchemaToResourceObject(matchingAttribute, fullSchemaForAttributesObject, resourceFieldSchema);
 
-                    DataTypeClass propertyDataTypeClass = matchingAttribute.Property.ResolveDataType();
-                    bool hasRequiredAttribute = matchingAttribute.Property.GetCustomAttribute<RequiredAttribute>() != null;
+                    resourceFieldSchema.Nullable = matchingAttribute.IsNullable();
 
-                    resourceFieldSchema.Nullable = IsAttributeNullable(propertyDataTypeClass, hasRequiredAttribute);
-
-                    if (_resourceTypeInfo.ResourceObjectOpenType == typeof(ResourcePostRequestObject<>))
+                    if (IsFieldRequired(matchingAttribute))
                     {
-                        if (IsAttributeRequired(propertyDataTypeClass, hasRequiredAttribute))
-                        {
-                            fullSchemaForAttributesObject.Required.Add(matchingAttribute.PublicName);
-                        }
+                        fullSchemaForAttributesObject.Required.Add(matchingAttribute.PublicName);
                     }
                 }
             }
@@ -116,32 +122,30 @@ namespace JsonApiDotNetCore.OpenApi.SwaggerComponents
             attributesObjectSchema.Properties.Add(attribute.PublicName, resourceAttributeSchema);
         }
 
-        private static bool IsAttributeNullable(DataTypeClass dataTypeClass, bool hasRequiredAttribute)
-        {
-            return dataTypeClass switch
-            {
-                DataTypeClass.NonNullableReferenceType or DataTypeClass.ValueType => false,
-                DataTypeClass.NullableReferenceType or DataTypeClass.NullableValueType => !hasRequiredAttribute,
-                _ => throw new UnreachableCodeException()
-            };
-        }
-
-        private static bool IsAttributeRequired(DataTypeClass dataTypeClass, bool hasRequiredAttribute)
-        {
-            return dataTypeClass switch
-            {
-                DataTypeClass.NonNullableReferenceType => true,
-                DataTypeClass.ValueType => hasRequiredAttribute,
-                DataTypeClass.NullableReferenceType or DataTypeClass.NullableValueType => hasRequiredAttribute,
-                _ => throw new UnreachableCodeException()
-            };
-        }
-
         private void ExposeSchema(OpenApiReference openApiReference, Type typeRepresentedBySchema)
         {
             OpenApiSchema fullSchema = ResourceSchemaRepository.Schemas[openApiReference.Id];
             _schemaRepositoryAccessor.Current.AddDefinition(openApiReference.Id, fullSchema);
             _schemaRepositoryAccessor.Current.RegisterType(typeRepresentedBySchema, openApiReference.Id);
+        }
+
+        private bool IsFieldRequired(ResourceFieldAttribute field)
+        {
+            if (_resourceTypeInfo.ResourceObjectOpenType != typeof(ResourcePostRequestObject<>))
+            {
+                return false;
+            }
+
+            TypeCategory fieldTypeCategory = field.Property.ResolveDataTypeCategory();
+            bool hasRequiredAttribute = field.Property.HasAttribute<RequiredAttribute>();
+
+            return fieldTypeCategory switch
+            {
+                TypeCategory.ReferenceType => true,
+                TypeCategory.ValueType => hasRequiredAttribute,
+                TypeCategory.NullableReferenceType or TypeCategory.NullableValueType => hasRequiredAttribute,
+                _ => throw new UnreachableCodeException()
+            };
         }
 
         private OpenApiSchema GetReferenceSchemaForFieldObject(OpenApiSchema fullSchema, string fieldObjectName)
@@ -212,28 +216,54 @@ namespace JsonApiDotNetCore.OpenApi.SwaggerComponents
             fullSchemaForResourceIdentifierObject.Properties[JsonApiObjectPropertyName.Type] = _resourceTypeSchemaGenerator.Get(resourceType);
         }
 
-        private void AddRelationshipDataSchemaToResourceObject(RelationshipAttribute relationship, OpenApiSchema relationshipObjectSchema)
+        private void AddRelationshipDataSchemaToResourceObject(RelationshipAttribute relationship, OpenApiSchema fullSchemaForRelationshipObject)
         {
             Type relationshipDataType = GetRelationshipDataType(relationship, _resourceTypeInfo.ResourceObjectOpenType);
 
-            OpenApiSchema referenceSchemaForRelationshipData = GetReferenceSchemaForRelationshipData(relationshipDataType) ??
-                CreateRelationshipDataObjectSchema(relationship, relationshipDataType);
+            OpenApiSchema relationshipDataSchema = GetReferenceSchemaForRelationshipData(relationshipDataType) ??
+                CreateRelationshipDataObjectSchema(relationshipDataType);
 
-            relationshipObjectSchema.Properties.Add(relationship.PublicName, referenceSchemaForRelationshipData);
+            fullSchemaForRelationshipObject.Properties.Add(relationship.PublicName, relationshipDataSchema);
+
+            if (IsFieldRequired(relationship))
+            {
+                fullSchemaForRelationshipObject.Required.Add(relationship.PublicName);
+            }
         }
 
         private static Type GetRelationshipDataType(RelationshipAttribute relationship, Type resourceObjectType)
         {
-            if (resourceObjectType.GetGenericTypeDefinition().IsAssignableTo(typeof(ResourceResponseObject<>)))
-            {
-                return relationship is HasOneAttribute
-                    ? typeof(ToOneRelationshipResponseData<>).MakeGenericType(relationship.RightType.ClrType)
-                    : typeof(ToManyRelationshipResponseData<>).MakeGenericType(relationship.RightType.ClrType);
-            }
+            Type relationshipDataType = resourceObjectType.GetGenericTypeDefinition().IsAssignableTo(typeof(ResourceResponseObject<>))
+                ? GetRelationshipDataTypeForResponse(relationship)
+                : GetRelationshipDataTypeForRequest(relationship);
+
+            return relationshipDataType.MakeGenericType(relationship.RightType.ClrType);
+        }
+
+        private static Type GetRelationshipDataTypeForRequest(RelationshipAttribute relationship)
+        {
+            // @formatter:nested_ternary_style expanded
 
             return relationship is HasOneAttribute
-                ? typeof(ToOneRelationshipRequestData<>).MakeGenericType(relationship.RightType.ClrType)
-                : typeof(ToManyRelationshipRequestData<>).MakeGenericType(relationship.RightType.ClrType);
+                ? relationship.IsNullable()
+                    ? typeof(NullableToOneRelationshipRequestData<>)
+                    : typeof(ToOneRelationshipRequestData<>)
+                : typeof(ToManyRelationshipRequestData<>);
+
+            // @formatter:nested_ternary_style restore
+        }
+
+        private static Type GetRelationshipDataTypeForResponse(RelationshipAttribute relationship)
+        {
+            // @formatter:nested_ternary_style expanded
+
+            return relationship is HasOneAttribute
+                ? relationship.IsNullable()
+                    ? typeof(NullableToOneRelationshipResponseData<>)
+                    : typeof(ToOneRelationshipResponseData<>)
+                : typeof(ToManyRelationshipResponseData<>);
+
+            // @formatter:nested_ternary_style restore
         }
 
         private OpenApiSchema? GetReferenceSchemaForRelationshipData(Type relationshipDataType)
@@ -242,7 +272,7 @@ namespace JsonApiDotNetCore.OpenApi.SwaggerComponents
             return referenceSchemaForRelationshipData;
         }
 
-        private OpenApiSchema CreateRelationshipDataObjectSchema(RelationshipAttribute relationship, Type relationshipDataType)
+        private OpenApiSchema CreateRelationshipDataObjectSchema(Type relationshipDataType)
         {
             OpenApiSchema referenceSchema = _defaultSchemaGenerator.GenerateSchema(relationshipDataType, _schemaRepositoryAccessor.Current);
 
@@ -250,15 +280,15 @@ namespace JsonApiDotNetCore.OpenApi.SwaggerComponents
 
             Type relationshipDataOpenType = relationshipDataType.GetGenericTypeDefinition();
 
-            if (relationshipDataOpenType == typeof(ToOneRelationshipResponseData<>) || relationshipDataOpenType == typeof(ToManyRelationshipResponseData<>))
-            {
-                fullSchema.Required.Remove(JsonApiObjectPropertyName.Data);
-            }
-
-            if (relationship is HasOneAttribute)
+            if (NullableRelationshipDataOpenTypes.Contains(relationshipDataOpenType))
             {
                 fullSchema.Properties[JsonApiObjectPropertyName.Data] =
                     _nullableReferenceSchemaGenerator.GenerateSchema(fullSchema.Properties[JsonApiObjectPropertyName.Data]);
+            }
+
+            if (RelationshipResponseDataOpenTypes.Contains(relationshipDataOpenType))
+            {
+                fullSchema.Required.Remove(JsonApiObjectPropertyName.Data);
             }
 
             return referenceSchema;

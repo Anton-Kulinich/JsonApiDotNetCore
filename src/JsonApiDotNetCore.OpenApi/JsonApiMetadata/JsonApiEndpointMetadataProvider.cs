@@ -16,16 +16,13 @@ namespace JsonApiDotNetCore.OpenApi.JsonApiMetadata
     /// </summary>
     internal sealed class JsonApiEndpointMetadataProvider
     {
-        private readonly IResourceGraph _resourceGraph;
         private readonly IControllerResourceMapping _controllerResourceMapping;
         private readonly EndpointResolver _endpointResolver = new();
 
-        public JsonApiEndpointMetadataProvider(IResourceGraph resourceGraph, IControllerResourceMapping controllerResourceMapping)
+        public JsonApiEndpointMetadataProvider(IControllerResourceMapping controllerResourceMapping)
         {
-            ArgumentGuard.NotNull(resourceGraph, nameof(resourceGraph));
             ArgumentGuard.NotNull(controllerResourceMapping, nameof(controllerResourceMapping));
 
-            _resourceGraph = resourceGraph;
             _controllerResourceMapping = controllerResourceMapping;
         }
 
@@ -47,28 +44,28 @@ namespace JsonApiDotNetCore.OpenApi.JsonApiMetadata
                 throw new UnreachableCodeException();
             }
 
-            IJsonApiRequestMetadata? requestMetadata = GetRequestMetadata(endpoint.Value, primaryResourceType.ClrType);
-            IJsonApiResponseMetadata? responseMetadata = GetResponseMetadata(endpoint.Value, primaryResourceType.ClrType);
+            IJsonApiRequestMetadata? requestMetadata = GetRequestMetadata(endpoint.Value, primaryResourceType);
+            IJsonApiResponseMetadata? responseMetadata = GetResponseMetadata(endpoint.Value, primaryResourceType);
             return new JsonApiEndpointMetadataContainer(requestMetadata, responseMetadata);
         }
 
-        private IJsonApiRequestMetadata? GetRequestMetadata(JsonApiEndpoint endpoint, Type primaryResourceType)
+        private static IJsonApiRequestMetadata? GetRequestMetadata(JsonApiEndpoint endpoint, ResourceType primaryResourceType)
         {
             switch (endpoint)
             {
                 case JsonApiEndpoint.Post:
                 {
-                    return GetPostRequestMetadata(primaryResourceType);
+                    return GetPostRequestMetadata(primaryResourceType.ClrType);
                 }
                 case JsonApiEndpoint.Patch:
                 {
-                    return GetPatchRequestMetadata(primaryResourceType);
+                    return GetPatchRequestMetadata(primaryResourceType.ClrType);
                 }
                 case JsonApiEndpoint.PostRelationship:
                 case JsonApiEndpoint.PatchRelationship:
                 case JsonApiEndpoint.DeleteRelationship:
                 {
-                    return GetRelationshipRequestMetadata(primaryResourceType, endpoint != JsonApiEndpoint.PatchRelationship);
+                    return GetRelationshipRequestMetadata(primaryResourceType.Relationships, endpoint != JsonApiEndpoint.PatchRelationship);
                 }
                 default:
                 {
@@ -77,38 +74,45 @@ namespace JsonApiDotNetCore.OpenApi.JsonApiMetadata
             }
         }
 
-        private static PrimaryRequestMetadata GetPostRequestMetadata(Type primaryResourceType)
+        private static PrimaryRequestMetadata GetPostRequestMetadata(Type resourceClrType)
         {
-            Type documentType = typeof(ResourcePostRequestDocument<>).MakeGenericType(primaryResourceType);
+            Type documentType = typeof(ResourcePostRequestDocument<>).MakeGenericType(resourceClrType);
 
             return new PrimaryRequestMetadata(documentType);
         }
 
-        private static PrimaryRequestMetadata GetPatchRequestMetadata(Type primaryResourceType)
+        private static PrimaryRequestMetadata GetPatchRequestMetadata(Type resourceClrType)
         {
-            Type documentType = typeof(ResourcePatchRequestDocument<>).MakeGenericType(primaryResourceType);
+            Type documentType = typeof(ResourcePatchRequestDocument<>).MakeGenericType(resourceClrType);
 
             return new PrimaryRequestMetadata(documentType);
         }
 
-        private RelationshipRequestMetadata GetRelationshipRequestMetadata(Type primaryResourceType, bool ignoreHasOneRelationships)
+        private static RelationshipRequestMetadata GetRelationshipRequestMetadata(IEnumerable<RelationshipAttribute> relationships,
+            bool ignoreHasOneRelationships)
         {
-            IEnumerable<RelationshipAttribute> relationships = _resourceGraph.GetResourceType(primaryResourceType).Relationships;
+            IEnumerable<RelationshipAttribute> relationshipInRequest = ignoreHasOneRelationships ? relationships.OfType<HasManyAttribute>() : relationships;
 
-            if (ignoreHasOneRelationships)
-            {
-                relationships = relationships.OfType<HasManyAttribute>();
-            }
+            IDictionary<string, Type> resourceTypesByRelationshipName = relationshipInRequest.ToDictionary(relationship => relationship.PublicName,
+                relationship =>
+                {
+                    // @formatter:nested_ternary_style expanded
 
-            IDictionary<string, Type> resourceTypesByRelationshipName = relationships.ToDictionary(relationship => relationship.PublicName,
-                relationship => relationship is HasManyAttribute
-                    ? typeof(ToManyRelationshipRequestData<>).MakeGenericType(relationship.RightType.ClrType)
-                    : typeof(ToOneRelationshipRequestData<>).MakeGenericType(relationship.RightType.ClrType));
+                    Type requestDataType = relationship is HasManyAttribute
+                        ? typeof(ToManyRelationshipRequestData<>)
+                        : relationship.IsNullable()
+                            ? typeof(NullableToOneRelationshipRequestData<>)
+                            : typeof(ToOneRelationshipRequestData<>);
+
+                    // @formatter:nested_ternary_style restore
+
+                    return requestDataType.MakeGenericType(relationship.RightType.ClrType);
+                });
 
             return new RelationshipRequestMetadata(resourceTypesByRelationshipName);
         }
 
-        private IJsonApiResponseMetadata? GetResponseMetadata(JsonApiEndpoint endpoint, Type primaryResourceType)
+        private static IJsonApiResponseMetadata? GetResponseMetadata(JsonApiEndpoint endpoint, ResourceType primaryResourceType)
         {
             switch (endpoint)
             {
@@ -117,15 +121,15 @@ namespace JsonApiDotNetCore.OpenApi.JsonApiMetadata
                 case JsonApiEndpoint.Post:
                 case JsonApiEndpoint.Patch:
                 {
-                    return GetPrimaryResponseMetadata(primaryResourceType, endpoint == JsonApiEndpoint.GetCollection);
+                    return GetPrimaryResponseMetadata(primaryResourceType.ClrType, endpoint == JsonApiEndpoint.GetCollection);
                 }
                 case JsonApiEndpoint.GetSecondary:
                 {
-                    return GetSecondaryResponseMetadata(primaryResourceType);
+                    return GetSecondaryResponseMetadata(primaryResourceType.Relationships);
                 }
                 case JsonApiEndpoint.GetRelationship:
                 {
-                    return GetRelationshipResponseMetadata(primaryResourceType);
+                    return GetRelationshipResponseMetadata(primaryResourceType.Relationships);
                 }
                 default:
                 {
@@ -134,17 +138,17 @@ namespace JsonApiDotNetCore.OpenApi.JsonApiMetadata
             }
         }
 
-        private static PrimaryResponseMetadata GetPrimaryResponseMetadata(Type primaryResourceType, bool endpointReturnsCollection)
+        private static PrimaryResponseMetadata GetPrimaryResponseMetadata(Type resourceClrType, bool endpointReturnsCollection)
         {
             Type documentOpenType = endpointReturnsCollection ? typeof(ResourceCollectionResponseDocument<>) : typeof(PrimaryResourceResponseDocument<>);
-            Type documentType = documentOpenType.MakeGenericType(primaryResourceType);
+            Type documentType = documentOpenType.MakeGenericType(resourceClrType);
 
             return new PrimaryResponseMetadata(documentType);
         }
 
-        private SecondaryResponseMetadata GetSecondaryResponseMetadata(Type primaryResourceType)
+        private static SecondaryResponseMetadata GetSecondaryResponseMetadata(IEnumerable<RelationshipAttribute> relationships)
         {
-            IDictionary<string, Type> responseTypesByRelationshipName = GetMetadataByRelationshipName(primaryResourceType, relationship =>
+            IDictionary<string, Type> responseTypesByRelationshipName = relationships.ToDictionary(relationship => relationship.PublicName, relationship =>
             {
                 Type documentType = relationship is HasManyAttribute
                     ? typeof(ResourceCollectionResponseDocument<>)
@@ -156,17 +160,9 @@ namespace JsonApiDotNetCore.OpenApi.JsonApiMetadata
             return new SecondaryResponseMetadata(responseTypesByRelationshipName);
         }
 
-        private IDictionary<string, Type> GetMetadataByRelationshipName(Type primaryResourceType,
-            Func<RelationshipAttribute, Type> extractRelationshipMetadataCallback)
+        private static RelationshipResponseMetadata GetRelationshipResponseMetadata(IEnumerable<RelationshipAttribute> relationships)
         {
-            IReadOnlyCollection<RelationshipAttribute> relationships = _resourceGraph.GetResourceType(primaryResourceType).Relationships;
-
-            return relationships.ToDictionary(relationship => relationship.PublicName, extractRelationshipMetadataCallback);
-        }
-
-        private RelationshipResponseMetadata GetRelationshipResponseMetadata(Type primaryResourceType)
-        {
-            IDictionary<string, Type> responseTypesByRelationshipName = GetMetadataByRelationshipName(primaryResourceType,
+            IDictionary<string, Type> responseTypesByRelationshipName = relationships.ToDictionary(relationship => relationship.PublicName,
                 relationship => relationship is HasManyAttribute
                     ? typeof(ResourceIdentifierCollectionResponseDocument<>).MakeGenericType(relationship.RightType.ClrType)
                     : typeof(ResourceIdentifierResponseDocument<>).MakeGenericType(relationship.RightType.ClrType));

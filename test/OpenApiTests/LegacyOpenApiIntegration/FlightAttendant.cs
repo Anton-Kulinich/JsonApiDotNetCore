@@ -36,5 +36,7 @@ namespace OpenApiTests.LegacyOpenApiIntegration
 
         [HasMany]
         public ISet<Flight> PurserOnFlights { get; set; } = new HashSet<Flight>();
+
+        public ISet<Flight> BackupPurserOnFlights { get; set; } = new HashSet<Flight>();
     }
 }

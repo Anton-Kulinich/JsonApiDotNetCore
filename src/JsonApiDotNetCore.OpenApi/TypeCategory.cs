@@ -1,9 +1,9 @@
 namespace JsonApiDotNetCore.OpenApi
 {
-    internal enum DataTypeClass
+    internal enum TypeCategory
     {
+        ReferenceType,
         NullableReferenceType,
-        NonNullableReferenceType,
         ValueType,
         NullableValueType
     }

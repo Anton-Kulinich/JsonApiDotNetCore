@@ -6,7 +6,7 @@ namespace JsonApiDotNetCore.OpenApi.JsonApiObjects
 {
     [UsedImplicitly(ImplicitUseTargetFlags.Members)]
     internal abstract class SingleData<TData>
-        where TData : ResourceIdentifierObject
+        where TData : ResourceIdentifierObject?
     {
         [Required]
         public TData Data { get; set; } = null!;
